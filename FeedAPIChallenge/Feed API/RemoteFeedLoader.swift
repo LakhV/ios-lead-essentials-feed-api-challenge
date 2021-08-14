@@ -5,7 +5,31 @@
 import Foundation
 
 public final class RemoteFeedLoader: FeedLoader {
-	typealias RemoteFeedLoaderResult = Swift.Result<Data, Error>
+	//MARK: - Public
+
+	public enum Error: Swift.Error {
+		case connectivity
+		case invalidData
+	}
+
+	public init(url: URL, client: HTTPClient) {
+		self.url = url
+		self.client = client
+	}
+
+	public func load(completion: @escaping (FeedLoader.Result) -> Void) {
+		client.get(from: url) { [weak self] httpClientResult in
+			guard self != nil else { return }
+
+			let result: FeedLoader.Result = Self.dataResult(from: httpClientResult)
+				.flatMap(RemoteFeedLoader.feedLoaderResult)
+			completion(result)
+		}
+	}
+
+	//MARK: - Private
+
+	private typealias DataResult = Swift.Result<Data, Swift.Error>
 
 	private struct ResponseRootEntity: Decodable {
 		let items: [RemoteFeedImage]
@@ -32,61 +56,31 @@ public final class RemoteFeedLoader: FeedLoader {
 	private let url: URL
 	private let client: HTTPClient
 
-	public enum Error: Swift.Error {
-		case connectivity
-		case invalidData
-	}
-
-	public init(url: URL, client: HTTPClient) {
-		self.url = url
-		self.client = client
-	}
-
-	public func load(completion: @escaping (FeedLoader.Result) -> Void) {
-		client.get(from: url) { [weak self] httpClientResult in
-
-			guard self != nil else { return }
-
-			var result: FeedLoader.Result
-
-			let feedLoaderResult = Self.httpClientResult2RemoteFeedLoaderResult(httpClientResult)
-			switch feedLoaderResult {
-			case .success(let responseData):
-				result = Self.responseData2FeedLoaderResult(responseData)
-
-			case .failure(let error):
-				result = .failure(error)
-			}
-
-			completion(result)
-		}
-	}
-
-	private static func httpClientResult2RemoteFeedLoaderResult(_ httpClientResult: HTTPClient.Result) -> RemoteFeedLoaderResult {
-		let feedLoaderResult = httpClientResult.mapError { _ in Error.connectivity }
-			.flatMap { (responseData, httpResponse) -> RemoteFeedLoaderResult in
+	private static func dataResult(from httpClientResult: HTTPClient.Result) -> DataResult {
+		return httpClientResult.mapError { _ in Error.connectivity }
+			.flatMap { (responseData, httpResponse) -> DataResult in
 				guard httpResponse.isStatusOK else {
 					return .failure(Error.invalidData)
 				}
 				return .success(responseData)
 			}
-		return feedLoaderResult
 	}
 
-	private static func responseData2FeedLoaderResult(_ responseData: Data) -> FeedLoader.Result {
-		var result: FeedLoader.Result
-		do {
-			let remoteFeedImages = try JSONDecoder().decode(ResponseRootEntity.self, from: responseData)
-			let feedImages = remoteFeedImages.items.map { $0.feedImage }
-			result = .success(feedImages)
-		} catch {
-			result = .failure(Error.invalidData)
+	private static func feedLoaderResult(from responseData: Data) -> FeedLoader.Result {
+		guard let remoteFeedImages = try? JSONDecoder().decode(ResponseRootEntity.self, from: responseData) else {
+			return .failure(Error.invalidData)
 		}
-		return result
+
+		let feedImages = remoteFeedImages.items.map { $0.feedImage }
+		return .success(feedImages)
 	}
 }
 
-extension HTTPURLResponse {
+//MARK: - HTTPURLResponse extension
+
+//NOTE: It would be better to share the extension below or at least move into separate file,
+//but due to restrictions specified in the task it's not allowed to add/change other files
+private extension HTTPURLResponse {
 	private static var OK_200: Int { return 200 }
 
 	var isStatusOK: Bool {
